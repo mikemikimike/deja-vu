@@ -2,11 +2,13 @@ package index
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Without zstd a compressed rollout stays out of the manifest, pass after pass,
@@ -172,6 +174,60 @@ func TestZstdMissingLeavesIndexAlone(t *testing.T) {
 	}
 	if !bytes.Equal(sessionsBefore, sessionsAfter) {
 		t.Error("unchanged pass rewrote sessions.gob")
+	}
+}
+
+func TestZstdMissingSurvivesNewestFirstPublish(t *testing.T) {
+	tmp := hermeticIndexEnv(t)
+	_, _, zst := zstdStubRollouts(t, tmp, "zstd-early-publish-thread")
+	claudeRoot := os.Getenv("DEJA_CLAUDE_ROOT")
+	now := time.Now()
+	for i := 0; i < partialPublishFrom; i++ {
+		id := fmt.Sprintf("early-publish-%03d", i)
+		path := filepath.Join(claudeRoot, "project", id+".jsonl")
+		at := now.Add(-time.Duration(i) * time.Minute).UTC().Format(time.RFC3339)
+		write(t, path, claudeLine(id, at, fmt.Sprintf("early publish session %d", i)))
+	}
+
+	idx := filepath.Join(tmp, "idx")
+	if err := Ensure(idx, "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	m, err := readManifest(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, held := m.Deferred[zst]; !held {
+		t.Fatalf("first build lost the deferred compressed rollout after newest-first publish: deferred=%d files=%d", len(m.Deferred), len(m.Files))
+	}
+	if _, held := m.Files[zst]; held {
+		t.Fatal("compressed rollout was held as read without zstd")
+	}
+	if fresh, _ := UpToDate(idx, ""); !fresh {
+		t.Fatal("first build with a deferred rollout still reads as stale")
+	}
+
+	manifestBefore, err := os.ReadFile(filepath.Join(idx, "manifest.gob"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionsBefore, err := os.ReadFile(filepath.Join(idx, "sessions.gob"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Ensure(idx, "", false, nil); err != nil {
+		t.Fatal(err)
+	}
+	manifestAfter, err := os.ReadFile(filepath.Join(idx, "manifest.gob"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionsAfter, err := os.ReadFile(filepath.Join(idx, "sessions.gob"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(manifestBefore, manifestAfter) || !bytes.Equal(sessionsBefore, sessionsAfter) {
+		t.Fatal("a second index pass rewrote files still waiting for zstd")
 	}
 }
 

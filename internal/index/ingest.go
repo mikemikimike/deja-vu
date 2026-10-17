@@ -90,7 +90,7 @@ func IngestFilesReport(dir string) map[string]FileIngest {
 func mergeIngestDiag(m *Manifest) {
 	reasons := sources.DiagReasons()
 	records := sources.DiagUnusableRecords()
-	foldDeferred(m, sources.DiagNoZstdPaths())
+	foldDeferred(m, noZstdThisPass())
 	malformed, failed := sources.DiagSnapshot()
 	if m.IngestFiles == nil {
 		m.IngestFiles = map[string]FileIngest{}
@@ -3953,6 +3953,9 @@ var passRead map[string]bool
 // so a manifest write that is not one (sync, forget) keeps Deferred as is.
 var passWalked map[string]FileState
 
+// Partial publishes drain source diagnostics before the full manifest folds them.
+var passNoZstd map[string]bool
+
 // walkedThisPass records the walk a pass starts from, until the returned func
 // runs. A rebuild inside a pass keeps the outer walk, taken before the outer
 // pass changed anything.
@@ -3961,7 +3964,25 @@ func walkedThisPass(files map[string]FileState) func() {
 		return func() {}
 	}
 	passWalked = maps.Clone(files)
-	return func() { passWalked = nil }
+	passNoZstd = nil
+	return func() {
+		passWalked = nil
+		passNoZstd = nil
+	}
+}
+
+func noZstdThisPass() map[string]bool {
+	current := sources.DiagNoZstdPaths()
+	if passWalked == nil {
+		return current
+	}
+	if passNoZstd == nil {
+		passNoZstd = map[string]bool{}
+	}
+	for p := range current {
+		passNoZstd[p] = true
+	}
+	return passNoZstd
 }
 
 // foldDeferred updates the transcripts held as waiting for zstd. A file this
